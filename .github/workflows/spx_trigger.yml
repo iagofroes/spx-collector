@@ -1,9 +1,7 @@
 name: SPX Trigger
 
 on:
-  workflow_run:
-    workflows: ["SPX Collector - 24/7"]
-    types: [completed]
+  workflow_dispatch:  # desativado temporariamente - reativar depois
 
 permissions:
   actions: write
