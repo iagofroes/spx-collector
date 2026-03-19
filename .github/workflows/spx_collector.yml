@@ -41,36 +41,4 @@ jobs:
           SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
           SPX_DEVICE_FINGERPRINT: ${{ secrets.SPX_DEVICE_FINGERPRINT }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: timeout 21600 python spx_collector.py || true  # 6 horas em segundos
-
-jobs:
-  collect:
-    name: Coletar dados SPX
-    runs-on: ubuntu-latest
-    timeout-minutes: 6
-
-    steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@v4
-
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Instalar dependências
-        run: pip install -r requirements.txt
-
-      - name: Configurar token Google
-        env:
-          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: echo "$GOOGLE_TOKEN_JSON" > token.json
-
-      - name: Executar coletor SPX
-        env:
-          SPX_USERNAME: ${{ secrets.SPX_USERNAME }}
-          SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
-          SPX_DEVICE_FINGERPRINT: ${{ secrets.SPX_DEVICE_FINGERPRINT }}
-          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: timeout 290 python spx_collector.py || true
+        run: timeout 21600 python spx_collector.py || true
