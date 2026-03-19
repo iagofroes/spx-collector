@@ -12,26 +12,12 @@ jobs:
   trigger:
     name: Re-disparar collector
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion != 'cancelled'
     steps:
-      - name: Verificar e disparar único ciclo
+      - name: Disparar novo ciclo
         run: |
-          # Conta quantos jobs do collector estão rodando agora
-          RUNNING=$(curl -s \
+          curl -X POST \
             -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/spx_collector.yml/runs?status=in_progress" \
-            | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['total_count'])")
-
-          echo "Jobs rodando agora: $RUNNING"
-
-          # Só dispara se não houver nenhum rodando
-          if [ "$RUNNING" -eq "0" ]; then
-            echo "Nenhum job rodando — disparando novo ciclo..."
-            curl -X POST \
-              -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              https://api.github.com/repos/${{ github.repository }}/actions/workflows/spx_collector.yml/dispatches \
-              -d '{"ref":"main"}'
-          else
-            echo "Já existe $RUNNING job(s) rodando — não disparando."
-          fi
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/spx_collector.yml/dispatches \
+            -d '{"ref":"main"}'
