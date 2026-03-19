@@ -1,23 +1,15 @@
 name: SPX Trigger
 
 on:
-  workflow_run:
-    workflows: ["SPX Collector - 24/7"]
-    types: [completed]
+  workflow_dispatch:  # DESATIVADO
 
 permissions:
   actions: write
 
 jobs:
   trigger:
-    name: Re-disparar collector
+    name: Desativado
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion != 'cancelled'
     steps:
-      - name: Disparar novo ciclo
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/spx_collector.yml/dispatches \
-            -d '{"ref":"main"}'
+      - name: Desativado
+        run: echo "Trigger desativado"

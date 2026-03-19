@@ -48,4 +48,4 @@ jobs:
           SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
           SPX_DEVICE_FINGERPRINT: ${{ secrets.SPX_DEVICE_FINGERPRINT }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: timeout 300 python spx_collector.py || true
+        run: timeout 290 python spx_collector.py || true
