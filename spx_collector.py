@@ -35,8 +35,8 @@ from googleapiclient.errors import HttpError
 # CONFIGURAÇÃO GERAL
 # =================================================================
 
-PROD_OUTBOUND_SPREADSHEET_ID = "1MT6Z44O2wFCUdDyJNu0gR05lFFza2cxIjkwi74gjRSE"
-DOCK_QUEUE_SPREADSHEET_ID    = "1MT6Z44O2wFCUdDyJNu0gR05lFFza2cxIjkwi74gjRSE"
+PROD_OUTBOUND_SPREADSHEET_ID = "1-etBpNtYbvYvpQ5e8NLKxlJXBq5Wp4SmBfhylLY6QP8"
+DOCK_QUEUE_SPREADSHEET_ID    = "1-etBpNtYbvYvpQ5e8NLKxlJXBq5Wp4SmBfhylLY6QP8"
 
 CONFIG_SHEET_NAME            = "Configuracoes"
 PRODUTIVIDADE_SHEET_NAME     = "raw_spx_workstation"
