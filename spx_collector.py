@@ -36,17 +36,24 @@ from googleapiclient.errors import HttpError
 # =================================================================
 
 PROD_OUTBOUND_SPREADSHEET_ID = "1-etBpNtYbvYvpQ5e8NLKxlJXBq5Wp4SmBfhylLY6QP8"
-DOCK_QUEUE_SPREADSHEET_ID    = "1-etBpNtYbvYvpQ5e8NLKxlJXBq5Wp4SmBfhylLY6QP8"
+YMS_SPREADSHEET_ID           = "1Ro56eetkC_IS4JUtLium5oA8Ty6XZ5-noQxO44VlYfc"
 
 CONFIG_SHEET_NAME            = "Configuracoes"
 PRODUTIVIDADE_SHEET_NAME     = "raw_spx_workstation"
 OUTBOUND_SHEET_NAME          = "raw_spx_packing_formated"
 OUTBOUND_ORIGINAL_SHEET_NAME = "raw_spx_packing"
-DOCK_QUEUE_SHEET_NAME        = "raw_spx_dock_queue"
+YMS_SHEET_NAME               = "yms_ontime"
 
-PRODUCTIVITY_API_URL = "https://spx.shopee.com.br/api/wfm/admin/workstation/productivity/productivity_individual_list"
-OUTBOUND_API_URL     = "https://spx.shopee.com.br/api/wfm/admin/dashboard/list"
-DOCK_QUEUE_API_URL   = "https://spx.shopee.com.br/api/in-station/dock_management/queue/list"
+PRODUCTIVITY_API_URL  = "https://spx.shopee.com.br/api/wfm/admin/workstation/productivity/productivity_individual_list"
+OUTBOUND_API_URL      = "https://spx.shopee.com.br/api/wfm/admin/dashboard/list"
+LINEHAUL_API_BASE     = "https://spx.shopee.com.br/api/admin/transportation/trip/list_v2"
+LINEHAUL_REFERER      = "https://spx.shopee.com.br/#/hubLinehaulTrips/trip"
+
+LINEHAUL_STATION_TYPES = "2,3,7,12,14,16,18"
+LINEHAUL_TAB_TYPES     = [1, 2, 3]
+LINEHAUL_TAB_LABEL     = {1: "Pending", 2: "Handover", 3: "Ended"}
+LINEHAUL_PAGE_SIZE     = 200
+LINEHAUL_DISPLAY_DAYS  = 7
 
 # URLs do fluxo de login
 # Passo 1: página FMS que seta cookies iniciais
@@ -403,47 +410,184 @@ def coletar_dados_outbound(session):
     return [], []
 
 
-def coletar_dados_fila_doca(session):
-    logging.info("--- Coletando Fila de Docas ---")
-    payload = {
-        "pageno": 1, "count": 500, "queue_type": 1,
-        "add_to_queue_time": "", "queue_status": "1,2,3,5",
-    }
-    data = executar_chamada_api(
-        session, "POST", DOCK_QUEUE_API_URL,
-        "https://spx.shopee.com.br/station/inbound/dock",
-        payload
-    )
-    if not (data and data.get("list")):
-        logging.warning("Nenhum dado na Fila de Docas.")
-        return []
+def calcular_display_range():
+    tz    = pytz.timezone(TIMEZONE)
+    agora = datetime.now(tz)
+    fim   = agora.replace(hour=23, minute=59, second=59, microsecond=0)
+    ini   = (agora - timedelta(days=LINEHAUL_DISPLAY_DAYS)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+    return f"{int(ini.timestamp())},{int(fim.timestamp())}"
 
-    lista = []
-    for i in data["list"]:
-        lista.append([
-            i.get("queue_number"),
-            i.get("vehicle_number"),
-            formatar_tempo_de_espera(i.get("waiting_time")),
-            "Yes" if i.get("is_prioritized") == 1 else "No",
-            ", ".join(i.get("prioritised_tags", [])),
-            formatar_tempo_de_espera(i.get("on_hold_time")),
-            i.get("route_info", {}).get("lh_trip_number"),
-            i.get("route_info", {}).get("lh_trip_name"),
-            i.get("handover_task_number"),
-            i.get("order_quantity"),
-            i.get("driver_name"),
-            mapear_tipo_chegada(i.get("arrival_type")),
-            i.get("agency"),
-            "Yes" if i.get("is_printed") else "No",
-            i.get("assigned_dock_code"),
-            i.get("assigned_dock_group_name"),
-            i.get("occupied_dock_code"),
-            mapear_status_doca(i.get("queue_status")),
-            i.get("occupancy_sequence"),
-            "-",
-        ])
-    logging.info(f"Sucesso! {len(lista)} registros de Docas.")
-    return lista
+
+def ts_to_str(ts):
+    if not ts or ts == 0:
+        return "-"
+    try:
+        ts = int(ts)
+        if ts > 1e12:
+            ts = ts // 1000
+        tz = pytz.timezone(TIMEZONE)
+        return datetime.fromtimestamp(ts, tz=tz).strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return str(ts)
+
+
+def safe(val, default="-"):
+    if val is None or val == "":
+        return default
+    return val
+
+
+STATUS_MAP = {
+    1: "Pending", 2: "Assigned", 3: "Departed",
+    4: "Arrived", 5: "Completed", 6: "Cancelled",
+    7: "Loading", 8: "Loaded",
+}
+ON_TIME_MAP = {
+    0: "-",           1: "On Time",
+    2: "Late Arrival", 3: "Early Arrival",
+    4: "Late Departure", 5: "Early Departure",
+}
+CIOT_STATUS_MAP = {1: "Created", 2: "Pending Create"}
+TOLL_STATUS_MAP = {1: "Fail", 2: "NA", 3: "Paid", 4: "Pending Payment"}
+MDFE_STATUS_MAP = {
+    1: "Cancel",          2: "Closed",
+    3: "Created",         4: "Failed Creation",
+    5: "No MDFe issued",  6: "Waiting tax document",
+    7: "Webhook Failure",
+}
+
+
+def processar_trip(t, tab_label):
+    try:
+        trip_stations = t.get("trip_station") or []
+        origem  = next((s for s in trip_stations if s.get("sequence_number") == 1), None)
+        destino = next((s for s in trip_stations if s.get("station_operation_type") == 1), None)
+        if not destino and len(trip_stations) > 1:
+            destino = trip_stations[-1]
+
+        def ts_orig(campo): return ts_to_str(origem.get(campo) if origem else None)
+        def ts_dest(campo): return ts_to_str(destino.get(campo) if destino else None)
+
+        sta = ts_dest("sta")
+        std = ts_orig("std")
+        ata = ts_dest("ata")
+        atd = ts_orig("atd")
+        eta = ts_dest("eta")
+        etd = ts_orig("etd")
+
+        loading_time = ts_orig("loading_time")
+        seal_time    = ts_orig("seal_time")
+        load_qty     = sum(s.get("load_quantity",   0) for s in trip_stations)
+        unload_qty   = sum(s.get("unload_quantity", 0) for s in trip_stations)
+
+        stations = t.get("station_list") or t.get("stations") or []
+        if stations:
+            station_str = " → ".join(s.get("name") or s.get("station_name") or "?" for s in stations)
+        elif trip_stations:
+            station_str = " → ".join(
+                s.get("station_name") or "?"
+                for s in sorted(trip_stations, key=lambda x: x.get("sequence_number", 0))
+            )
+        else:
+            station_str = safe(t.get("station") or t.get("station_name"))
+
+        on_time_raw = next(
+            (s.get("on_time_indicator_value") for s in trip_stations
+             if s.get("on_time_indicator_value")), 0
+        )
+        on_time_str = ON_TIME_MAP.get(on_time_raw, str(on_time_raw) if on_time_raw else "-")
+
+        veh_plate = t.get("vehicle_number") or t.get("plate_number") or "-"
+        if isinstance(veh_plate, list):
+            veh_plate = ", ".join(veh_plate)
+
+        status_str = STATUS_MAP.get(t.get("trip_status") or t.get("status"), str(safe(t.get("trip_status"))))
+        ciot_str   = CIOT_STATUS_MAP.get(t.get("ciot_status"), str(safe(t.get("ciot_status"))))
+        toll_str   = TOLL_STATUS_MAP.get(t.get("toll_status"), str(safe(t.get("toll_status"))))
+        mdfe_str   = MDFE_STATUS_MAP.get(t.get("mdfe_status"), str(safe(t.get("mdfe_status"))))
+
+        return [
+            tab_label,
+            safe(t.get("trip_number")   or t.get("lh_trip_number")),
+            safe(t.get("trip_name")     or t.get("lh_trip_name")),
+            status_str, station_str,
+            ts_to_str(t.get("last_location_update_time")),
+            on_time_str, safe(t.get("vehicle_type")),
+            f"{sta} / {std}", f"{ata} / {atd}", f"{eta} / {etd}",
+            loading_time, seal_time, load_qty, unload_qty,
+            veh_plate,
+            safe(t.get("driver_name")        or t.get("driver")),
+            safe(t.get("second_driver_name") or t.get("second_driver")),
+            ciot_str, safe(t.get("ciot_err") or t.get("ciot_error")),
+            toll_str, safe(t.get("toll_err") or t.get("toll_error")),
+            mdfe_str,
+            safe(t.get("trip_source")), safe(t.get("trip_type")),
+            safe(t.get("cost_type")),
+            safe(t.get("agency_name") or t.get("agency")),
+            ts_to_str(t.get("mtime") or t.get("update_time")),
+            safe(t.get("operator")),
+            ts_to_str(t.get("assigned_time") or t.get("assign_time")),
+            safe(t.get("to_inbound_quantity"),    0),
+            safe(t.get("order_inbound_quantity"), 0),
+            safe(t.get("pack_type")),
+            safe(t.get("order_packed_quantity"),  0),
+            safe(t.get("to_packed_quantity"),     0),
+            safe(t.get("to_loaded_quantity"),     0),
+            safe(t.get("order_loaded_quantity"),  0),
+        ]
+    except Exception as e:
+        logging.warning(f"Erro ao processar trip {t.get('trip_number','?')}: {e}")
+        return None
+
+
+def coletar_linehaul_trips(session):
+    logging.info("--- Coletando LineHaul Trips ---")
+    display_range = calcular_display_range()
+    todas = []
+
+    for tab in LINEHAUL_TAB_TYPES:
+        label  = LINEHAUL_TAB_LABEL[tab]
+        pageno = 1
+        coletados = 0
+        logging.info(f"  [{label}]")
+
+        while True:
+            url = (
+                f"{LINEHAUL_API_BASE}"
+                f"?station_type={LINEHAUL_STATION_TYPES}"
+                f"&pageno={pageno}&count={LINEHAUL_PAGE_SIZE}"
+                f"&query_type=1&tab_type={tab}"
+                f"&display_range={display_range}"
+            )
+            data = executar_chamada_api(session, "GET", url, LINEHAUL_REFERER)
+
+            if not data:
+                break
+
+            lista     = data.get("list") or data.get("trip_list") or data.get("trips") or []
+            total_api = int(data.get("total", data.get("count", 0)))
+
+            if not lista:
+                break
+
+            logging.info(f"    p.{pageno}: {len(lista)} registros (total={total_api})")
+
+            for item in lista:
+                row = processar_trip(item, label)
+                if row:
+                    todas.append(row)
+
+            coletados += len(lista)
+            if coletados >= total_api or len(lista) < LINEHAUL_PAGE_SIZE:
+                logging.info(f"    [{label}] concluído: {coletados}/{total_api}")
+                break
+
+            pageno += 1
+            time.sleep(0.3)
+
+    logging.info(f"LineHaul TOTAL: {len(todas)} registros.")
+    return todas
 
 # =================================================================
 # GOOGLE SHEETS
@@ -589,18 +733,29 @@ def main():
             else:
                 logging.warning("Outbound formatado vazio — mantendo dados anteriores no Sheets.")
 
-            # 4 — Fila de Docas
-            header_doca = [
-                "Queue Number","Vehicle Number","Waiting Time","Prioritised","Prioritised Factors",
-                "On-hold Time","LH Trip Number","LH Trip Name","Handover Task Number",
-                "Pending Inbound Parcel Qty","Driver Name","Arrival Type","Agency","Print Tag",
-                "Assigned Dock","Assigned Dock Group","Occupied Dock","Status",
-                "Dock Occupancy Sequence","Action",
+            # 4 — LineHaul Trips (yms_ontime)
+            header_yms = [
+                "Tab", "LH Trip Number", "LH Trip Name", "Status",
+                "Station (Origem → Destino)", "Last Location Update Time",
+                "On Time Indicator", "Vehicle Type",
+                "STA / STD", "ATA / ATD", "ETA / ETD",
+                "Loading Time", "Seal Time",
+                "Inbound Qty", "Outbound Qty",
+                "Vehicle Plate Number", "Driver", "Second Driver",
+                "CIOT Status", "CIOT Error",
+                "Toll Status", "Toll Error",
+                "MDFe Status", "Trip Source", "Trip Type", "Cost Type",
+                "Agency", "Time Update", "Operator", "Assign Time",
+                "Pending Inbound TO", "Pending Inbound Order",
+                "Pending Inbound TO Pack Type",
+                "Order Packed", "TO Packed", "TO Loaded", "Order Loaded",
             ]
-            dados_doca = coletar_dados_fila_doca(session)
-            write_to_sheet(sheets_service, DOCK_QUEUE_SPREADSHEET_ID, DOCK_QUEUE_SHEET_NAME, [header_doca] + dados_doca)
-            if dados_doca:
-                append_timestamp(sheets_service, DOCK_QUEUE_SPREADSHEET_ID, DOCK_QUEUE_SHEET_NAME, ts)
+            dados_yms = coletar_linehaul_trips(session)
+            if dados_yms:
+                write_to_sheet(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, [header_yms] + dados_yms)
+                append_timestamp(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, ts)
+            else:
+                logging.warning("LineHaul vazio — mantendo dados anteriores no Sheets.")
 
         except ConnectionAbortedError:
             logging.warning("Sessão expirada — forçando novo login no próximo ciclo.")
