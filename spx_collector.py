@@ -543,6 +543,14 @@ def processar_trip(t, tab_label):
 
 def coletar_linehaul_trips(session):
     logging.info("--- Coletando LineHaul Trips ---")
+
+    # Visita a página antes para garantir contexto correto da sessão
+    try:
+        session.get(LINEHAUL_REFERER, timeout=15)
+        time.sleep(1)
+    except Exception:
+        pass
+
     display_range = calcular_display_range()
     todas = []
 
@@ -569,6 +577,7 @@ def coletar_linehaul_trips(session):
             total_api = int(data.get("total", data.get("count", 0)))
 
             if not lista:
+                logging.warning(f"  [{label}] p.{pageno} lista vazia. Chaves retornadas: {list(data.keys()) if data else 'None'}")
                 break
 
             logging.info(f"    p.{pageno}: {len(lista)} registros (total={total_api})")
