@@ -541,12 +541,48 @@ def processar_trip(t, tab_label):
         return None
 
 
+def executar_chamada_linehaul(session, url):
+    """Chamada GET específica para LineHaul — mantém Referer fixo entre páginas."""
+    try:
+        csrf = session.cookies.get("csrftoken", "") or session.cookies.get("csrftoken", domain="spx.shopee.com.br", default="")
+        headers = {
+            "Referer":    "https://spx.shopee.com.br/",
+            "x-csrftoken": csrf,
+        }
+        resp = session.get(url, headers=headers, timeout=30)
+
+        if resp.status_code == 403:
+            logging.debug(f"LineHaul 403 — ignorado.")
+            return None
+
+        resp.raise_for_status()
+        json_response = resp.json()
+        retcode = json_response.get("retcode", json_response.get("code", -1))
+
+        if retcode != 0:
+            msg = json_response.get("message", "")
+            if "cookie" in msg.lower() or "login" in msg.lower():
+                raise ConnectionAbortedError("Sessão expirada.")
+            logging.debug(f"LineHaul retcode={retcode}: {msg}")
+            return None
+
+        return json_response.get("data", json_response)
+
+    except ConnectionAbortedError:
+        raise
+    except Exception as exc:
+        logging.error(f"Falha LineHaul [{url[:80]}]: {exc}")
+        return None
+
+
 def coletar_linehaul_trips(session):
     logging.info("--- Coletando LineHaul Trips ---")
 
-    # Visita a página antes para garantir contexto correto da sessão
+    # Visita a página base para garantir contexto correto da sessão
     try:
-        session.get(LINEHAUL_REFERER, timeout=15)
+        session.get("https://spx.shopee.com.br/", timeout=15)
+        time.sleep(1)
+        session.get("https://spx.shopee.com.br/admin/transportation/trip", timeout=15)
         time.sleep(1)
     except Exception:
         pass
@@ -555,10 +591,11 @@ def coletar_linehaul_trips(session):
     todas = []
 
     for tab in LINEHAUL_TAB_TYPES:
-        label  = LINEHAUL_TAB_LABEL[tab]
-        pageno = 1
+        label     = LINEHAUL_TAB_LABEL[tab]
+        pageno    = 1
         coletados = 0
         logging.info(f"  [{label}]")
+        time.sleep(3)  # pausa entre tabs para evitar rate limit
 
         while True:
             url = (
@@ -568,16 +605,25 @@ def coletar_linehaul_trips(session):
                 f"&query_type=1&tab_type={tab}"
                 f"&display_range={display_range}"
             )
-            data = executar_chamada_api(session, "GET", url, LINEHAUL_REFERER)
+
+            # Retry até 3x se retornar None
+            data = None
+            for tentativa in range(1, 4):
+                data = executar_chamada_linehaul(session, url)
+                if data is not None:
+                    break
+                logging.warning(f"  [{label}] p.{pageno} tentativa {tentativa}/3: None — aguardando 10s...")
+                time.sleep(10)
 
             if not data:
+                logging.warning(f"  [{label}] p.{pageno}: todas as tentativas falharam.")
                 break
 
             lista     = data.get("list") or data.get("trip_list") or data.get("trips") or []
             total_api = int(data.get("total", data.get("count", 0)))
 
             if not lista:
-                logging.warning(f"  [{label}] p.{pageno} lista vazia. Chaves retornadas: {list(data.keys()) if data else 'None'}")
+                logging.warning(f"  [{label}] p.{pageno} lista vazia. Chaves: {list(data.keys())}")
                 break
 
             logging.info(f"    p.{pageno}: {len(lista)} registros (total={total_api})")
@@ -593,7 +639,7 @@ def coletar_linehaul_trips(session):
                 break
 
             pageno += 1
-            time.sleep(0.3)
+            time.sleep(5)  # aguarda entre páginas para evitar rate limit
 
     logging.info(f"LineHaul TOTAL: {len(todas)} registros.")
     return todas
