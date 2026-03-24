@@ -461,18 +461,42 @@ MDFE_STATUS_MAP = {
 def processar_trip(t, tab_label):
     try:
         trip_stations = t.get("trip_station") or []
-        origem  = next((s for s in trip_stations if s.get("sequence_number") == 1), None)
-        destino = next((s for s in trip_stations if s.get("station_operation_type") == 1), None)
-        if not destino and len(trip_stations) > 1:
-            destino = trip_stations[-1]
+
+        # Ordena por sequence_number para garantir ordem correta
+        trip_stations_sorted = sorted(trip_stations, key=lambda x: x.get("sequence_number", 0))
+
+        # Estação 1 (origem): onde o veículo chega para carregar → tem ATA/STA/STD
+        # Estação 2 (destino): onde vai entregar → tem STA do destino
+        origem = next(
+            (s for s in trip_stations_sorted if s.get("station_operation_type") == 0),
+            trip_stations_sorted[0] if trip_stations_sorted else None
+        )
+        # Destino = última estação (operation_type=1 ou última da sequência)
+        destino = next(
+            (s for s in reversed(trip_stations_sorted) if s.get("station_operation_type") == 1),
+            trip_stations_sorted[-1] if len(trip_stations_sorted) > 1 else None
+        )
 
         def ts_orig(campo): return ts_to_str(origem.get(campo) if origem else None)
         def ts_dest(campo): return ts_to_str(destino.get(campo) if destino else None)
 
-        sta = ts_dest("sta")
         std = ts_orig("std")
-        ata = ts_dest("ata")
-        atd = ts_orig("atd")
+
+        # STA: usa destino se tiver, senão origem
+        sta = ts_dest("sta") if (destino and destino.get("sta")) else ts_orig("sta")
+
+        # ATA: pega da origem se tiver valor, senão do destino
+        # Para SoC→LM Hub: ATA está na origem (veículo chega ao SoC para carregar)
+        # Para FM Hub→SoC: ATA está no destino
+        ata_orig_val = origem.get("ata", 0) if origem else 0
+        ata_dest_val = destino.get("ata", 0) if destino else 0
+        ata = ts_to_str(ata_orig_val if ata_orig_val else ata_dest_val)
+
+        # ATD: pega da origem se tiver, senão do destino
+        atd_orig_val = origem.get("atd", 0) if origem else 0
+        atd_dest_val = destino.get("atd", 0) if destino else 0
+        atd = ts_to_str(atd_orig_val if atd_orig_val else atd_dest_val)
+
         eta = ts_dest("eta")
         etd = ts_orig("etd")
 
