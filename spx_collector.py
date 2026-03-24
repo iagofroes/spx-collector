@@ -485,17 +485,25 @@ def processar_trip(t, tab_label):
         # STA: usa destino se tiver, senão origem
         sta = ts_dest("sta") if (destino and destino.get("sta")) else ts_orig("sta")
 
-        # ATA: pega da origem se tiver valor, senão do destino
-        # Para SoC→LM Hub: ATA está na origem (veículo chega ao SoC para carregar)
-        # Para FM Hub→SoC: ATA está no destino
-        ata_orig_val = origem.get("ata", 0) if origem else 0
-        ata_dest_val = destino.get("ata", 0) if destino else 0
-        ata = ts_to_str(ata_orig_val if ata_orig_val else ata_dest_val)
+        # ATA/ATD: sempre pega da estação de Simões Filho (station=8808)
+        # independente de ser origem ou destino
+        SIMOES_FILHO_ID = 8808
+        estacao_simoes = next(
+            (s for s in trip_stations_sorted if s.get("station") == SIMOES_FILHO_ID),
+            None
+        )
 
-        # ATD: pega da origem se tiver, senão do destino
-        atd_orig_val = origem.get("atd", 0) if origem else 0
-        atd_dest_val = destino.get("atd", 0) if destino else 0
-        atd = ts_to_str(atd_orig_val if atd_orig_val else atd_dest_val)
+        if estacao_simoes:
+            ata = ts_to_str(estacao_simoes.get("ata", 0))
+            atd = ts_to_str(estacao_simoes.get("atd", 0))
+        else:
+            # Fallback se não encontrar Simões Filho: pega qualquer valor disponível
+            ata_orig_val = origem.get("ata",  0) if origem  else 0
+            ata_dest_val = destino.get("ata", 0) if destino else 0
+            atd_orig_val = origem.get("atd",  0) if origem  else 0
+            atd_dest_val = destino.get("atd", 0) if destino else 0
+            ata = ts_to_str(ata_dest_val if ata_dest_val else ata_orig_val)
+            atd = ts_to_str(atd_dest_val if atd_dest_val else atd_orig_val)
 
         eta = ts_dest("eta")
         etd = ts_orig("etd")
