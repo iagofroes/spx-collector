@@ -76,9 +76,13 @@ SPX_TOB_LOGIN_URL = (
 # Se precisar atualizar: DevTools → Network → login → Payload → security_device_fingerprint
 SPX_DEVICE_FINGERPRINT = os.environ.get("SPX_DEVICE_FINGERPRINT", "")
 
-EXECUTION_INTERVAL_SECONDS = 60
+EXECUTION_INTERVAL_SECONDS = int(os.environ.get("EXECUTION_INTERVAL_SECONDS", "60"))
 TIMEZONE = "America/Sao_Paulo"
 SCOPES   = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Modo de execução: "spx" (Produtividade+Outbound) ou "linehaul" (LineHaul Trips)
+# Controlado via variável de ambiente COLLECTOR_MODE
+COLLECTOR_MODE = os.environ.get("COLLECTOR_MODE", "spx")
 
 # =================================================================
 # CREDENCIAIS SPX  ← Lidas de variáveis de ambiente (GitHub Secrets)
@@ -767,12 +771,13 @@ def main():
         logging.critical(f"Falha ao autenticar Google Sheets: {exc}")
         return
 
+    logging.info(f"🚀 Iniciando em modo: {COLLECTOR_MODE.upper()} | Intervalo: {EXECUTION_INTERVAL_SECONDS}s")
+
     MAX_RETRIES_LOGIN = 5
     session = None
 
     # ── Loop infinito de coleta ─────────────────────────────────
     while True:
-        # (Re)login se necessário
         if session is None:
             for tentativa in range(1, MAX_RETRIES_LOGIN + 1):
                 logging.info(f"Tentativa de login {tentativa}/{MAX_RETRIES_LOGIN}…")
@@ -780,7 +785,7 @@ def main():
                 if fazer_login(session):
                     break
                 session = None
-                time.sleep(10 * tentativa)   # backoff progressivo
+                time.sleep(10 * tentativa)
             else:
                 logging.critical("Todas as tentativas de login falharam. Abortando.")
                 return
@@ -789,69 +794,71 @@ def main():
         try:
             ts = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
-            # 1 — Configs de sessão
-            salvar_configs_sessao(session, sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, CONFIG_SHEET_NAME)
+            if COLLECTOR_MODE == "spx":
+                # ── Modo SPX: Produtividade + Outbound ──────────────
+                salvar_configs_sessao(session, sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, CONFIG_SHEET_NAME)
 
-            # 2 — Produtividade
-            header_prod = [
-                "ID do Operador", "Nome do Operador", "Estação de Trabalho",
-                "Tipo de Atividade", "Horas Trabalhadas", "QUANTO O COLABORADOR FEZ",
-                "Check-in", "Check-out", "Vazia 1", "Vazia 2", "Hora", "Data",
-            ]
-            dados_prod = coletar_dados_produtividade(session)
-            write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, [header_prod] + dados_prod)
-            if dados_prod:
-                append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, ts)
+                header_prod = [
+                    "ID do Operador", "Nome do Operador", "Estação de Trabalho",
+                    "Tipo de Atividade", "Horas Trabalhadas", "QUANTO O COLABORADOR FEZ",
+                    "Check-in", "Check-out", "Vazia 1", "Vazia 2", "Hora", "Data",
+                ]
+                dados_prod = coletar_dados_produtividade(session)
+                write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, [header_prod] + dados_prod)
+                if dados_prod:
+                    append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, ts)
 
-            # 3 — Outbound
-            originais, formatados = coletar_dados_outbound(session)
+                originais, formatados = coletar_dados_outbound(session)
 
-            header_orig = ["Operador", "Total", "H-0","H-1","H-2","H-3","H-4","H-5","H-6","H-7","H-8","H-9","H-10","H-11"]
-            if originais:
-                write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_ORIGINAL_SHEET_NAME, [header_orig] + originais)
-                append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_ORIGINAL_SHEET_NAME, ts)
+                header_orig = ["Operador", "Total", "H-0","H-1","H-2","H-3","H-4","H-5","H-6","H-7","H-8","H-9","H-10","H-11"]
+                if originais:
+                    write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_ORIGINAL_SHEET_NAME, [header_orig] + originais)
+                    append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_ORIGINAL_SHEET_NAME, ts)
+                else:
+                    logging.warning("Outbound original vazio — mantendo dados anteriores.")
+
+                header_fmt = ["Operador", "Total", "Hora", "Eficiência"]
+                if formatados:
+                    write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_SHEET_NAME, [header_fmt] + formatados)
+                    append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_SHEET_NAME, ts)
+                else:
+                    logging.warning("Outbound formatado vazio — mantendo dados anteriores.")
+
+            elif COLLECTOR_MODE == "linehaul":
+                # ── Modo LineHaul: YMS On Time ───────────────────────
+                header_yms = [
+                    "Tab", "LH Trip Number", "LH Trip Name", "Status",
+                    "Station (Origem → Destino)", "Last Location Update Time",
+                    "On Time Indicator", "Vehicle Type",
+                    "STA / STD", "ATA / ATD", "ETA / ETD",
+                    "Loading Time", "Seal Time",
+                    "Inbound Qty", "Outbound Qty",
+                    "Vehicle Plate Number", "Driver", "Second Driver",
+                    "CIOT Status", "CIOT Error",
+                    "Toll Status", "Toll Error",
+                    "MDFe Status", "Trip Source", "Trip Type", "Cost Type",
+                    "Agency", "Time Update", "Operator", "Assign Time",
+                    "Pending Inbound TO", "Pending Inbound Order",
+                    "Pending Inbound TO Pack Type",
+                    "Order Packed", "TO Packed", "TO Loaded", "Order Loaded",
+                ]
+                dados_yms = coletar_linehaul_trips(session)
+                if dados_yms:
+                    write_to_sheet(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, [header_yms] + dados_yms)
+                    append_timestamp(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, ts)
+                else:
+                    logging.warning("LineHaul vazio — mantendo dados anteriores.")
+
             else:
-                logging.warning("Outbound original vazio — mantendo dados anteriores no Sheets.")
-
-            header_fmt = ["Operador", "Total", "Hora", "Eficiência"]
-            if formatados:
-                write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_SHEET_NAME, [header_fmt] + formatados)
-                append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, OUTBOUND_SHEET_NAME, ts)
-            else:
-                logging.warning("Outbound formatado vazio — mantendo dados anteriores no Sheets.")
-
-            # 4 — LineHaul Trips (yms_ontime)
-            header_yms = [
-                "Tab", "LH Trip Number", "LH Trip Name", "Status",
-                "Station (Origem → Destino)", "Last Location Update Time",
-                "On Time Indicator", "Vehicle Type",
-                "STA / STD", "ATA / ATD", "ETA / ETD",
-                "Loading Time", "Seal Time",
-                "Inbound Qty", "Outbound Qty",
-                "Vehicle Plate Number", "Driver", "Second Driver",
-                "CIOT Status", "CIOT Error",
-                "Toll Status", "Toll Error",
-                "MDFe Status", "Trip Source", "Trip Type", "Cost Type",
-                "Agency", "Time Update", "Operator", "Assign Time",
-                "Pending Inbound TO", "Pending Inbound Order",
-                "Pending Inbound TO Pack Type",
-                "Order Packed", "TO Packed", "TO Loaded", "Order Loaded",
-            ]
-            dados_yms = coletar_linehaul_trips(session)
-            if dados_yms:
-                write_to_sheet(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, [header_yms] + dados_yms)
-                append_timestamp(sheets_service, YMS_SPREADSHEET_ID, YMS_SHEET_NAME, ts)
-            else:
-                logging.warning("LineHaul vazio — mantendo dados anteriores no Sheets.")
+                logging.error(f"COLLECTOR_MODE inválido: '{COLLECTOR_MODE}'. Use 'spx' ou 'linehaul'.")
 
         except ConnectionAbortedError:
             logging.warning("Sessão expirada — forçando novo login no próximo ciclo.")
             session = None
-            continue   # reinicia o loop sem esperar
+            continue
 
         except Exception as exc:
             logging.error(f"Erro inesperado no ciclo: {exc}", exc_info=True)
-            # Não mata o script — apenas loga e continua
 
         logging.info(f"### CICLO CONCLUÍDO. Aguardando {EXECUTION_INTERVAL_SECONDS}s… ###")
         time.sleep(EXECUTION_INTERVAL_SECONDS)

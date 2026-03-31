@@ -1,4 +1,4 @@
-name: SPX Collector - 24/7
+name: LineHaul Collector - 24/7
 
 on:
   schedule:
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: spx-collector-run
+  group: linehaul-collector-run
   cancel-in-progress: false
 
 jobs:
   collect:
-    name: Coletar dados SPX
+    name: Coletar LineHaul Trips
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -39,10 +39,12 @@ jobs:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: echo "$GOOGLE_TOKEN_JSON" > token.json
 
-      - name: Executar coletor SPX
+      - name: Executar coletor LineHaul
         env:
           SPX_USERNAME: ${{ secrets.SPX_USERNAME }}
           SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
           SPX_DEVICE_FINGERPRINT: ${{ secrets.SPX_DEVICE_FINGERPRINT }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-        run: timeout 21600 python spx_collector_spx.py || true
+          COLLECTOR_MODE: "linehaul"
+          EXECUTION_INTERVAL_SECONDS: "180"
+        run: timeout 21600 python spx_collector.py || true
