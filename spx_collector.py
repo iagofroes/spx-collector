@@ -325,6 +325,14 @@ def coletar_dados_produtividade(session):
     logging.info("--- Coletando Produtividade (Workstation) ---")
     tz = pytz.timezone(TIMEZONE)
     dados_finais = []
+
+    # Visita a página antes para garantir contexto correto
+    try:
+        session.get("https://spx.shopee.com.br/admin/workstation/productivity", timeout=15)
+        time.sleep(2)
+    except Exception:
+        pass
+
     for periodo in calcular_periodos_coleta():
         start_dt = tz.localize(
             datetime.strptime(f"{periodo['data_calendario']} {periodo['hora_inicio']}", "%Y-%m-%d %H:%M")
@@ -342,10 +350,19 @@ def coletar_dados_produtividade(session):
             f"&end_time={int(end_dt.timestamp())}"
             f"&activity_type=12"
         )
-        data = executar_chamada_api(
-            session, "GET", url,
-            "https://spx.shopee.com.br/admin/workstation/productivity"
-        )
+
+        # Retry até 3x se retornar None
+        data = None
+        for tentativa in range(1, 4):
+            data = executar_chamada_api(
+                session, "GET", url,
+                "https://spx.shopee.com.br/admin/workstation/productivity"
+            )
+            if data is not None:
+                break
+            logging.warning(f"Produtividade {periodo['periodo_str']} tentativa {tentativa}/3 — aguardando 5s...")
+            time.sleep(5)
+
         if data and data.get("list"):
             for item in data["list"]:
                 ops_id, ops_name = "", ""
