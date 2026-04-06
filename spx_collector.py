@@ -351,16 +351,16 @@ def coletar_dados_produtividade(session):
             f"&activity_type=12"
         )
 
-        # Retry até 3x se retornar None
+        # Retry até 2x se retornar None
         data = None
-        for tentativa in range(1, 4):
+        for tentativa in range(1, 3):
             data = executar_chamada_api(
                 session, "GET", url,
                 "https://spx.shopee.com.br/admin/workstation/productivity"
             )
             if data is not None:
                 break
-            logging.warning(f"Produtividade {periodo['periodo_str']} tentativa {tentativa}/3 — aguardando 5s...")
+            logging.warning(f"Produtividade {periodo['periodo_str']} tentativa {tentativa}/2 — aguardando 5s...")
             time.sleep(5)
 
         if data and data.get("list"):
@@ -792,6 +792,8 @@ def main():
 
     MAX_RETRIES_LOGIN = 5
     session = None
+    ultimo_ciclo_prod = None   # controla quando rodar produtividade (a cada 10min)
+    INTERVALO_PROD = 600       # 10 minutos em segundos
 
     # ── Loop infinito de coleta ─────────────────────────────────
     while True:
@@ -810,21 +812,30 @@ def main():
         logging.info("### INICIANDO NOVO CICLO ###")
         try:
             ts = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+            agora = time.time()
 
             if COLLECTOR_MODE == "spx":
                 # ── Modo SPX: Produtividade + Outbound ──────────────
                 salvar_configs_sessao(session, sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, CONFIG_SHEET_NAME)
 
-                header_prod = [
-                    "ID do Operador", "Nome do Operador", "Estação de Trabalho",
-                    "Tipo de Atividade", "Horas Trabalhadas", "QUANTO O COLABORADOR FEZ",
-                    "Check-in", "Check-out", "Vazia 1", "Vazia 2", "Hora", "Data",
-                ]
-                dados_prod = coletar_dados_produtividade(session)
-                write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, [header_prod] + dados_prod)
-                if dados_prod:
-                    append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, ts)
+                # Produtividade: só atualiza a cada 10 minutos
+                if ultimo_ciclo_prod is None or (agora - ultimo_ciclo_prod) >= INTERVALO_PROD:
+                    header_prod = [
+                        "ID do Operador", "Nome do Operador", "Estação de Trabalho",
+                        "Tipo de Atividade", "Horas Trabalhadas", "QUANTO O COLABORADOR FEZ",
+                        "Check-in", "Check-out", "Vazia 1", "Vazia 2", "Hora", "Data",
+                    ]
+                    dados_prod = coletar_dados_produtividade(session)
+                    write_to_sheet(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, [header_prod] + dados_prod)
+                    if dados_prod:
+                        append_timestamp(sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, PRODUTIVIDADE_SHEET_NAME, ts)
+                    ultimo_ciclo_prod = agora
+                    logging.info("Produtividade atualizada. Próxima em 10 minutos.")
+                else:
+                    restante = int(INTERVALO_PROD - (agora - ultimo_ciclo_prod))
+                    logging.info(f"Produtividade: aguardando {restante}s para próxima atualização.")
 
+                # Outbound: atualiza a cada ciclo (1 minuto)
                 originais, formatados = coletar_dados_outbound(session)
 
                 header_orig = ["Operador", "Total", "H-0","H-1","H-2","H-3","H-4","H-5","H-6","H-7","H-8","H-9","H-10","H-11"]
