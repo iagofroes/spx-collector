@@ -6,25 +6,14 @@ import requests
 from datetime import datetime, timedelta
 import pytz
 
-# =================================================================
-# AMBIENTE: local (.env) ou nuvem (GitHub Secrets)
-# =================================================================
-# Em ambiente local, cria um arquivo .env na mesma pasta com:
-#   SPX_USERNAME=seu_ops_id
-#   SPX_PASSWORD=sua_senha
-#   GOOGLE_TOKEN_JSON=<conteúdo do token.json em uma linha>
-#
-# Na nuvem (GitHub Actions), as variáveis vêm dos Secrets automaticamente.
-# O bloco abaixo tenta carregar o .env se existir — sem erro se não existir.
 try:
     from dotenv import load_dotenv
-    if load_dotenv(override=False):  # override=False: Secrets da nuvem têm prioridade
+    if load_dotenv(override=False):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         logging.info("🔧 Ambiente LOCAL detectado — variáveis carregadas do .env")
 except ImportError:
-    pass  # python-dotenv não instalado = ambiente de nuvem, tudo bem
+    pass
 
-# --- Importações do Google Sheets ---
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -55,53 +44,37 @@ LINEHAUL_TAB_LABEL     = {1: "Pending", 2: "Handover", 3: "Ended"}
 LINEHAUL_PAGE_SIZE     = 200
 LINEHAUL_DISPLAY_DAYS  = 7
 
-# URLs do fluxo de login
-# Passo 1: página FMS que seta cookies iniciais
 FMS_LOGIN_PAGE_URL = (
     "https://fms.business.accounts.shopee.com.br/authenticate/login/"
     "?client_id=25"
     "&next=https%3A%2F%2Fspx.shopee.com.br%2Fapi%2Fadmin%2Fbasicserver%2Fops_tob_login"
     "%3Frefer%3Dhttps%3A%2F%2Fspx.shopee.com.br%2F%23%2F"
 )
-# Passo 2: endpoint real confirmado via DevTools
 SPX_LOGIN_API_URL = "https://shopee.com.br/api/v4/account/business/login"
-
-# Redirect final que seta a sessão SPX após login bem-sucedido
 SPX_TOB_LOGIN_URL = (
     "https://spx.shopee.com.br/api/admin/basicserver/ops_tob_login"
     "?refer=https://spx.shopee.com.br/%23/"
 )
 
-# Fingerprint do device — vem do Secret SPX_DEVICE_FINGERPRINT
-# Se precisar atualizar: DevTools → Network → login → Payload → security_device_fingerprint
-SPX_DEVICE_FINGERPRINT = os.environ.get("SPX_DEVICE_FINGERPRINT", "")
-
+SPX_DEVICE_FINGERPRINT     = os.environ.get("SPX_DEVICE_FINGERPRINT", "")
 EXECUTION_INTERVAL_SECONDS = int(os.environ.get("EXECUTION_INTERVAL_SECONDS", "60"))
 TIMEZONE = "America/Sao_Paulo"
 SCOPES   = ["https://www.googleapis.com/auth/spreadsheets"]
-
-# Modo de execução: "spx" (Produtividade+Outbound) ou "linehaul" (LineHaul Trips)
-# Controlado via variável de ambiente COLLECTOR_MODE
 COLLECTOR_MODE = os.environ.get("COLLECTOR_MODE", "spx")
 
-# =================================================================
-# CREDENCIAIS SPX  ← Lidas de variáveis de ambiente (GitHub Secrets)
-# =================================================================
 SPX_USERNAME = os.environ.get("SPX_USERNAME", "")
 SPX_PASSWORD = os.environ.get("SPX_PASSWORD", "")
 
-# Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 # =================================================================
-# SESSÃO HTTP  (substitui o Selenium por completo)
+# SESSÃO HTTP
 # =================================================================
 
 def criar_sessao() -> requests.Session:
-    """Cria uma sessão requests com headers padrão do browser."""
     session = requests.Session()
     session.headers.update({
         "User-Agent": (
@@ -116,41 +89,45 @@ def criar_sessao() -> requests.Session:
     return session
 
 
+def get_cookie_safe(session, name):
+    """
+    Pega cookie pelo nome sem explodir com CookieConflictError.
+    Prefere domínio exato 'spx.shopee.com.br' sobre '.spx.shopee.com.br'.
+    """
+    for cookie in session.cookies:
+        if cookie.name == name and cookie.domain == "spx.shopee.com.br":
+            return cookie.value
+    for cookie in session.cookies:
+        if cookie.name == name and cookie.domain == ".spx.shopee.com.br":
+            return cookie.value
+    for cookie in session.cookies:
+        if cookie.name == name:
+            return cookie.value
+    return ""
+
+
 def _md5(texto: str) -> str:
-    """Retorna o hash MD5 de uma string (usado para senha no login SPX)."""
     import hashlib
     return hashlib.md5(texto.encode()).hexdigest()
 
 
 def fazer_login(session: requests.Session) -> bool:
-    """
-    Fluxo de login confirmado via DevTools:
-
-      1. GET na página FMS → seta cookies iniciais (SPC_F, SPC_SEC_SI, etc.)
-      2. POST para shopee.com.br/api/v4/account/business/login
-         com username, password em MD5, captcha_signature vazio
-         e security_device_fingerprint fixo
-      3. Resposta contém code=0 + token de autorização
-      4. GET em ops_tob_login com o token → SPX seta cookies de sessão
-    """
     if not SPX_USERNAME or not SPX_PASSWORD:
         logging.critical("SPX_USERNAME e/ou SPX_PASSWORD não definidos nos Secrets.")
         return False
 
     try:
-        # ── Passo 1: carregar página FMS para obter cookies iniciais ───────────
         logging.info("Login — Passo 1: carregando página FMS...")
         session.headers.update({"Origin": "https://fms.business.accounts.shopee.com.br"})
         resp_page = session.get(FMS_LOGIN_PAGE_URL, timeout=30, allow_redirects=True)
         resp_page.raise_for_status()
         logging.info(f"Login — Passo 1 OK. Cookies obtidos: {len(session.cookies)}")
 
-        # ── Passo 2: POST de login para shopee.com.br ──────────────────────────
         logging.info("Login — Passo 2: enviando credenciais...")
         payload = {
-            "username":                  SPX_USERNAME,
-            "password":                  _md5(SPX_PASSWORD),
-            "captcha_signature":         "",
+            "username":                    SPX_USERNAME,
+            "password":                    _md5(SPX_PASSWORD),
+            "captcha_signature":           "",
             "security_device_fingerprint": SPX_DEVICE_FINGERPRINT,
         }
         login_headers = {
@@ -164,20 +141,17 @@ def fazer_login(session: requests.Session) -> bool:
             json=payload,
             headers=login_headers,
             timeout=30,
-            allow_redirects=False,  # vamos checar a resposta antes de redirecionar
+            allow_redirects=False,
         )
         resp_login.raise_for_status()
 
         data = resp_login.json()
         logging.info(f"Login — Passo 2 resposta: error={data.get('error')} | data keys={list(data.get('data', {}).keys())}")
 
-        # Campo de sucesso é "error": 0  (não "code")
         if data.get("error") != 0:
             logging.error(f"Login falhou. Resposta completa: {data}")
             return False
 
-        # ── Passo 3: usar nonce retornado para finalizar sessão no SPX ─────────
-        # O token vem no campo "nonce" dentro de "data"
         token = (
             data.get("data", {}).get("nonce")
             or data.get("data", {}).get("token")
@@ -198,20 +172,21 @@ def fazer_login(session: requests.Session) -> bool:
         resp_tob = session.get(tob_url, timeout=30, allow_redirects=True)
         resp_tob.raise_for_status()
 
-        # ── Verificar cookies de sessão SPX ────────────────────────────────────
-        csrf_spx = session.cookies.get("csrftoken", domain="spx.shopee.com.br") or ""
-        spx_cid  = session.cookies.get("spx_cid",   domain="spx.shopee.com.br") or ""
+        # FIX: usa get_cookie_safe para evitar CookieConflictError com cookies duplicados
+        csrf    = get_cookie_safe(session, "csrftoken")
+        spx_cid = get_cookie_safe(session, "spx_cid")
+        spx_uk  = get_cookie_safe(session, "spx_uk")
 
-        if csrf_spx or spx_cid:
-            if csrf_spx:
-                session.headers.update({"x-csrftoken": csrf_spx})
+        if csrf:
+            session.headers.update({"x-csrftoken": csrf})
+
+        # FIX: aceita sessão se tiver spx_uk ou spx_cid, mesmo sem csrftoken
+        if csrf or spx_cid or spx_uk:
             logging.info("✅ Login SPX completo! Sessão estabelecida.")
             return True
 
-        # Se não achou cookies específicos mas chegou até aqui sem erro, considera OK
-        # (alguns ambientes podem usar nomes de cookies diferentes)
         logging.warning(
-            "Login: cookies spx_cid/csrftoken não encontrados, "
+            "Login: cookies spx_cid/csrftoken/spx_uk não encontrados, "
             "mas nenhum erro ocorreu. Tentando continuar..."
         )
         return True
@@ -230,13 +205,10 @@ def executar_chamada_api(
     referer: str,
     payload: dict | None = None
 ) -> dict | None:
-    """
-    Executa uma chamada GET ou POST na API SPX usando a sessão requests.
-    Retorna o campo 'data' da resposta JSON, ou None em caso de erro.
-    """
     try:
+        # FIX: usa get_cookie_safe para evitar CookieConflictError
+        csrf = get_cookie_safe(session, "csrftoken")
         headers = {"Referer": referer}
-        csrf = session.cookies.get("csrftoken", "")
         if csrf:
             headers["x-csrftoken"] = csrf
             session.headers.update({"x-csrftoken": csrf})
@@ -246,7 +218,6 @@ def executar_chamada_api(
         else:
             resp = session.get(url, headers=headers, timeout=30)
 
-        # 403 = sem permissão para esse endpoint — ignora silenciosamente
         if resp.status_code == 403:
             logging.debug(f"API '{url}' retornou 403 (sem permissão) — ignorado.")
             return None
@@ -258,7 +229,6 @@ def executar_chamada_api(
 
         if retcode != 0:
             msg = json_response.get("message", "sem mensagem")
-            # Só loga como erro se não for problema de permissão
             if retcode in (401, 403) or "cookie" in msg.lower() or "login" in msg.lower():
                 raise ConnectionAbortedError("Sessão expirada detectada pela API.")
             logging.debug(f"API '{url}' retornou retcode={retcode}: {msg} — ignorado.")
@@ -269,7 +239,6 @@ def executar_chamada_api(
     except ConnectionAbortedError:
         raise
     except Exception as exc:
-        # Ignora silenciosamente erros HTTP de permissão
         if "403" in str(exc) or "401" in str(exc):
             logging.debug(f"API '{url}' sem permissão — ignorado.")
             return None
@@ -297,7 +266,7 @@ def formatar_tempo_de_espera(minutos):
     return f"{h:02d}:{m:02d}"
 
 def calcular_periodos_coleta():
-    tz  = pytz.timezone(TIMEZONE)
+    tz    = pytz.timezone(TIMEZONE)
     agora = datetime.now(tz)
     dia_trabalho = agora if agora.hour >= 6 else agora - timedelta(days=1)
     inicio = dia_trabalho.replace(hour=6, minute=0, second=0, microsecond=0)
@@ -326,7 +295,6 @@ def coletar_dados_produtividade(session):
     tz = pytz.timezone(TIMEZONE)
     dados_finais = []
 
-    # Visita a página antes para garantir contexto correto
     try:
         session.get("https://spx.shopee.com.br/admin/workstation/productivity", timeout=15)
         time.sleep(2)
@@ -351,7 +319,6 @@ def coletar_dados_produtividade(session):
             f"&activity_type=12"
         )
 
-        # Retry até 2x se retornar None
         data = None
         for tentativa in range(1, 3):
             data = executar_chamada_api(
@@ -395,7 +362,7 @@ def coletar_dados_outbound(session):
     }
 
     MAX_TENTATIVAS = 3
-    ESPERA = 10  # segundos entre tentativas
+    ESPERA = 10
 
     for tentativa in range(1, MAX_TENTATIVAS + 1):
         data = executar_chamada_api(
@@ -412,7 +379,7 @@ def coletar_dados_outbound(session):
                 hora_atual = datetime.now(pytz.timezone(TIMEZONE)).hour
                 originais, formatados = [], []
                 for item in efficiency_list:
-                    eff = item.get("efficiency", [])
+                    eff    = item.get("efficiency", [])
                     padded = eff + [0] * (12 - len(eff))
                     originais.append([item.get("operator", ""), item.get("efficiency_total", 0)] + padded)
                     for i in range(12):
@@ -465,7 +432,7 @@ STATUS_MAP = {
     7: "Loading", 8: "Loaded",
 }
 ON_TIME_MAP = {
-    0: "-",           1: "On Time",
+    0: "-",            1: "On Time",
     2: "Late Arrival", 3: "Early Arrival",
     4: "Late Departure", 5: "Early Departure",
 }
@@ -482,17 +449,12 @@ MDFE_STATUS_MAP = {
 def processar_trip(t, tab_label):
     try:
         trip_stations = t.get("trip_station") or []
-
-        # Ordena por sequence_number para garantir ordem correta
         trip_stations_sorted = sorted(trip_stations, key=lambda x: x.get("sequence_number", 0))
 
-        # Estação 1 (origem): onde o veículo chega para carregar → tem ATA/STA/STD
-        # Estação 2 (destino): onde vai entregar → tem STA do destino
         origem = next(
             (s for s in trip_stations_sorted if s.get("station_operation_type") == 0),
             trip_stations_sorted[0] if trip_stations_sorted else None
         )
-        # Destino = última estação (operation_type=1 ou última da sequência)
         destino = next(
             (s for s in reversed(trip_stations_sorted) if s.get("station_operation_type") == 1),
             trip_stations_sorted[-1] if len(trip_stations_sorted) > 1 else None
@@ -502,12 +464,8 @@ def processar_trip(t, tab_label):
         def ts_dest(campo): return ts_to_str(destino.get(campo) if destino else None)
 
         std = ts_orig("std")
-
-        # STA: usa destino se tiver, senão origem
         sta = ts_dest("sta") if (destino and destino.get("sta")) else ts_orig("sta")
 
-        # ATA/ATD: sempre pega da estação de Simões Filho (station=8808)
-        # independente de ser origem ou destino
         SIMOES_FILHO_ID = 8808
         estacao_simoes = next(
             (s for s in trip_stations_sorted if s.get("station") == SIMOES_FILHO_ID),
@@ -518,7 +476,6 @@ def processar_trip(t, tab_label):
             ata = ts_to_str(estacao_simoes.get("ata", 0))
             atd = ts_to_str(estacao_simoes.get("atd", 0))
         else:
-            # Fallback se não encontrar Simões Filho: pega qualquer valor disponível
             ata_orig_val = origem.get("ata",  0) if origem  else 0
             ata_dest_val = destino.get("ata", 0) if destino else 0
             atd_orig_val = origem.get("atd",  0) if origem  else 0
@@ -595,17 +552,18 @@ def processar_trip(t, tab_label):
 
 
 def executar_chamada_linehaul(session, url):
-    """Chamada GET específica para LineHaul — mantém Referer fixo entre páginas."""
+    """Chamada GET específica para LineHaul — usa get_cookie_safe para evitar CookieConflictError."""
     try:
-        csrf = session.cookies.get("csrftoken", "") or session.cookies.get("csrftoken", domain="spx.shopee.com.br", default="")
+        # FIX: get_cookie_safe no lugar de session.cookies.get() que explode com duplicatas
+        csrf = get_cookie_safe(session, "csrftoken")
         headers = {
-            "Referer":    "https://spx.shopee.com.br/",
+            "Referer":     "https://spx.shopee.com.br/",
             "x-csrftoken": csrf,
         }
         resp = session.get(url, headers=headers, timeout=30)
 
         if resp.status_code == 403:
-            logging.debug(f"LineHaul 403 — ignorado.")
+            logging.debug("LineHaul 403 — ignorado.")
             return None
 
         resp.raise_for_status()
@@ -631,7 +589,6 @@ def executar_chamada_linehaul(session, url):
 def coletar_linehaul_trips(session):
     logging.info("--- Coletando LineHaul Trips ---")
 
-    # Visita a página base para garantir contexto correto da sessão
     try:
         session.get("https://spx.shopee.com.br/", timeout=15)
         time.sleep(1)
@@ -648,7 +605,7 @@ def coletar_linehaul_trips(session):
         pageno    = 1
         coletados = 0
         logging.info(f"  [{label}]")
-        time.sleep(3)  # pausa entre tabs para evitar rate limit
+        time.sleep(3)
 
         while True:
             url = (
@@ -659,7 +616,6 @@ def coletar_linehaul_trips(session):
                 f"&display_range={display_range}"
             )
 
-            # Retry até 3x se retornar None
             data = None
             for tentativa in range(1, 4):
                 data = executar_chamada_linehaul(session, url)
@@ -692,10 +648,33 @@ def coletar_linehaul_trips(session):
                 break
 
             pageno += 1
-            time.sleep(5)  # aguarda entre páginas para evitar rate limit
+            time.sleep(5)
 
-    logging.info(f"LineHaul TOTAL: {len(todas)} registros.")
-    return todas
+    logging.info(f"LineHaul TOTAL antes dedup: {len(todas)} registros.")
+
+    STATUS_PRIORIDADE = {"Ended": 3, "Handover": 2, "Pending": 1}
+    dedup = {}
+
+    for row in todas:
+        trip_num   = row[1]
+        tab        = row[0]
+        prioridade = STATUS_PRIORIDADE.get(tab, 0)
+
+        if trip_num not in dedup:
+            dedup[trip_num] = (prioridade, row)
+        else:
+            prioridade_atual, row_atual = dedup[trip_num]
+            campos_preenchidos_novo  = sum(1 for c in row     if c and c != "-")
+            campos_preenchidos_atual = sum(1 for c in row_atual if c and c != "-")
+            if prioridade > prioridade_atual or (
+                prioridade == prioridade_atual and
+                campos_preenchidos_novo > campos_preenchidos_atual
+            ):
+                dedup[trip_num] = (prioridade, row)
+
+    todas_dedup = [v[1] for v in dedup.values()]
+    logging.info(f"LineHaul TOTAL após dedup: {len(todas_dedup)} registros.")
+    return todas_dedup
 
 # =================================================================
 # GOOGLE SHEETS
@@ -761,15 +740,13 @@ def append_timestamp(service, spreadsheet_id, sheet_name, ts):
 def salvar_configs_sessao(session: requests.Session, service, spreadsheet_id, sheet_name):
     logging.info(f"--- Salvando configs de sessão em '{sheet_name}' ---")
     try:
-        cookies_str = "; ".join(
-            f"{c.name}={c.value}" for c in session.cookies
-        )
-        csrf = session.cookies.get("csrftoken", "N/A")
+        cookies_str = "; ".join(f"{c.name}={c.value}" for c in session.cookies)
+        csrf  = get_cookie_safe(session, "csrftoken")
         dados = [
             ["Chave de Configuração", "Valor"],
             ["Data/Hora da Extração", datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")],
             ["Cookie", cookies_str],
-            ["x-csrftoken", csrf],
+            ["x-csrftoken", csrf or "N/A"],
             ["User-Agent", session.headers.get("User-Agent", "N/A")],
         ]
         write_to_sheet(service, spreadsheet_id, sheet_name, dados)
@@ -781,7 +758,6 @@ def salvar_configs_sessao(session: requests.Session, service, spreadsheet_id, sh
 # =================================================================
 
 def main():
-    # ── Autenticação Google Sheets ──────────────────────────────
     try:
         sheets_service = get_sheets_service()
     except Exception as exc:
@@ -792,10 +768,9 @@ def main():
 
     MAX_RETRIES_LOGIN = 5
     session = None
-    ultimo_ciclo_prod = None   # controla quando rodar produtividade (a cada 10min)
-    INTERVALO_PROD = 600       # 10 minutos em segundos
+    ultimo_ciclo_prod = None
+    INTERVALO_PROD    = 600
 
-    # ── Loop infinito de coleta ─────────────────────────────────
     while True:
         if session is None:
             for tentativa in range(1, MAX_RETRIES_LOGIN + 1):
@@ -811,14 +786,12 @@ def main():
 
         logging.info("### INICIANDO NOVO CICLO ###")
         try:
-            ts = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+            ts    = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
             agora = time.time()
 
             if COLLECTOR_MODE == "spx":
-                # ── Modo SPX: Produtividade + Outbound ──────────────
                 salvar_configs_sessao(session, sheets_service, PROD_OUTBOUND_SPREADSHEET_ID, CONFIG_SHEET_NAME)
 
-                # Produtividade: só atualiza a cada 10 minutos
                 if ultimo_ciclo_prod is None or (agora - ultimo_ciclo_prod) >= INTERVALO_PROD:
                     header_prod = [
                         "ID do Operador", "Nome do Operador", "Estação de Trabalho",
@@ -835,7 +808,6 @@ def main():
                     restante = int(INTERVALO_PROD - (agora - ultimo_ciclo_prod))
                     logging.info(f"Produtividade: aguardando {restante}s para próxima atualização.")
 
-                # Outbound: atualiza a cada ciclo (1 minuto)
                 originais, formatados = coletar_dados_outbound(session)
 
                 header_orig = ["Operador", "Total", "H-0","H-1","H-2","H-3","H-4","H-5","H-6","H-7","H-8","H-9","H-10","H-11"]
@@ -853,7 +825,6 @@ def main():
                     logging.warning("Outbound formatado vazio — mantendo dados anteriores.")
 
             elif COLLECTOR_MODE == "linehaul":
-                # ── Modo LineHaul: YMS On Time ───────────────────────
                 header_yms = [
                     "Tab", "LH Trip Number", "LH Trip Name", "Status",
                     "Station (Origem → Destino)", "Last Location Update Time",
