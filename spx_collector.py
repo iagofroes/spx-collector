@@ -41,7 +41,7 @@ LINEHAUL_REFERER      = "https://spx.shopee.com.br/#/hubLinehaulTrips/trip"
 LINEHAUL_STATION_TYPES = "2,3,7,12,14,16,18"
 LINEHAUL_TAB_TYPES     = [1, 2, 3]
 LINEHAUL_TAB_LABEL     = {1: "Pending", 2: "Handover", 3: "Ended"}
-LINEHAUL_PAGE_SIZE     = 200
+LINEHAUL_PAGE_SIZE     = 50
 LINEHAUL_DISPLAY_DAYS  = 7
 
 FMS_LOGIN_PAGE_URL = (
@@ -568,6 +568,8 @@ def executar_chamada_linehaul(session, url):
 
         resp.raise_for_status()
         json_response = resp.json()
+
+
         retcode = json_response.get("retcode", json_response.get("code", -1))
 
         if retcode != 0:
