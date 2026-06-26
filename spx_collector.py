@@ -64,6 +64,10 @@ COLLECTOR_MODE = os.environ.get("COLLECTOR_MODE", "spx")
 
 SPX_USERNAME = os.environ.get("SPX_USERNAME", "")
 SPX_PASSWORD = os.environ.get("SPX_PASSWORD", "")
+SPX_CID      = os.environ.get("SPX_CID", "")
+SPX_UK       = os.environ.get("SPX_UK", "")
+SPX_ST       = os.environ.get("SPX_ST", "1")
+SPX_UID      = os.environ.get("SPX_UID", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,10 +94,6 @@ def criar_sessao() -> requests.Session:
 
 
 def get_cookie_safe(session, name):
-    """
-    Pega cookie pelo nome sem explodir com CookieConflictError.
-    Prefere domínio exato 'spx.shopee.com.br' sobre '.spx.shopee.com.br'.
-    """
     for cookie in session.cookies:
         if cookie.name == name and cookie.domain == "spx.shopee.com.br":
             return cookie.value
@@ -104,6 +104,30 @@ def get_cookie_safe(session, name):
         if cookie.name == name:
             return cookie.value
     return ""
+
+
+def montar_headers_spx(referer: str, csrf: str = "") -> dict:
+    """Monta headers padrão com cookies SPX injetados manualmente."""
+    cookie_str = (
+        f"spx_cid={SPX_CID}; "
+        f"spx_uk={SPX_UK}; "
+        f"spx_st={SPX_ST}; "
+        f"spx_uid={SPX_UID}"
+    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer":         referer,
+        "Cookie":          cookie_str,
+    }
+    if csrf:
+        headers["x-csrftoken"] = csrf
+    return headers
 
 
 def _md5(texto: str) -> str:
@@ -172,23 +196,38 @@ def fazer_login(session: requests.Session) -> bool:
         resp_tob = session.get(tob_url, timeout=30, allow_redirects=True)
         resp_tob.raise_for_status()
 
-        # FIX: usa get_cookie_safe para evitar CookieConflictError com cookies duplicados
-        csrf    = get_cookie_safe(session, "csrftoken")
-        spx_cid = get_cookie_safe(session, "spx_cid")
-        spx_uk  = get_cookie_safe(session, "spx_uk")
+        logging.info("Login — Passo 4: acessando home SPX para setar cookies...")
+        time.sleep(2)
+        resp_home = session.get(
+            "https://spx.shopee.com.br/api/admin/basicserver/get_login_info",
+            headers={"Referer": "https://spx.shopee.com.br/"},
+            timeout=30
+        )
+        logging.info(f"Passo 4 status: {resp_home.status_code}")
+
+        time.sleep(1)
+        resp_spa = session.get(
+            "https://spx.shopee.com.br/",
+            headers={"Referer": "https://spx.shopee.com.br/"},
+            timeout=30,
+            allow_redirects=True
+        )
+        logging.info(f"Passo 4 SPA status: {resp_spa.status_code}")
+
+        csrf   = get_cookie_safe(session, "csrftoken")
+        spc_f  = get_cookie_safe(session, "SPC_F")
+        spc_si = get_cookie_safe(session, "SPC_SI")
 
         if csrf:
             session.headers.update({"x-csrftoken": csrf})
 
-        # FIX: aceita sessão se tiver spx_uk ou spx_cid, mesmo sem csrftoken
-        if csrf or spx_cid or spx_uk:
+        logging.info(f"Cookies SPX injetados — cid:{SPX_CID or 'N/A'} | st:{SPX_ST} | uid:{SPX_UID or 'N/A'} | uk:{SPX_UK[:10]+'...' if SPX_UK else 'N/A'}")
+
+        if csrf or spc_f or spc_si or SPX_CID or SPX_UK:
             logging.info("✅ Login SPX completo! Sessão estabelecida.")
             return True
 
-        logging.warning(
-            "Login: cookies spx_cid/csrftoken/spx_uk não encontrados, "
-            "mas nenhum erro ocorreu. Tentando continuar..."
-        )
+        logging.warning("Login: nenhum cookie de sessão encontrado. Tentando continuar mesmo assim...")
         return True
 
     except ConnectionAbortedError:
@@ -205,33 +244,29 @@ def executar_chamada_api(
     referer: str,
     payload: dict | None = None
 ) -> dict | None:
+    """Chamada API genérica com cookies SPX injetados manualmente."""
     try:
-        # FIX: usa get_cookie_safe para evitar CookieConflictError
         csrf = get_cookie_safe(session, "csrftoken")
-        headers = {"Referer": referer}
-        if csrf:
-            headers["x-csrftoken"] = csrf
-            session.headers.update({"x-csrftoken": csrf})
+        headers = montar_headers_spx(referer, csrf)
 
         if method.upper() == "POST":
-            resp = session.post(url, json=payload, headers=headers, timeout=30)
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
         else:
-            resp = session.get(url, headers=headers, timeout=30)
+            resp = requests.get(url, headers=headers, timeout=30)
 
         if resp.status_code == 403:
-            logging.debug(f"API '{url}' retornou 403 (sem permissão) — ignorado.")
+            logging.warning(f"API '{url[:80]}' retornou HTTP 403.")
             return None
 
         resp.raise_for_status()
         json_response = resp.json()
-
         retcode = json_response.get("retcode")
 
         if retcode != 0:
             msg = json_response.get("message", "sem mensagem")
+            logging.warning(f"API '{url[:80]}' retcode={retcode}: {msg}")
             if retcode in (401, 403) or "cookie" in msg.lower() or "login" in msg.lower():
                 raise ConnectionAbortedError("Sessão expirada detectada pela API.")
-            logging.debug(f"API '{url}' retornou retcode={retcode}: {msg} — ignorado.")
             return None
 
         return json_response.get("data")
@@ -240,9 +275,42 @@ def executar_chamada_api(
         raise
     except Exception as exc:
         if "403" in str(exc) or "401" in str(exc):
-            logging.debug(f"API '{url}' sem permissão — ignorado.")
+            logging.warning(f"API '{url[:80]}' sem permissão: {exc}")
             return None
-        logging.error(f"Falha na chamada API '{url}': {exc}")
+        logging.error(f"Falha na chamada API '{url[:80]}': {exc}")
+        return None
+
+
+def executar_chamada_linehaul(session, url):
+    """Chamada GET específica para LineHaul com cookies SPX injetados manualmente."""
+    try:
+        csrf = get_cookie_safe(session, "csrftoken")
+        headers = montar_headers_spx("https://spx.shopee.com.br/#/hubLinehaulTrips/trip", csrf)
+
+        resp = requests.get(url, headers=headers, timeout=30)
+
+        if resp.status_code == 403:
+            logging.warning(f"LineHaul 403 — {url[:80]}")
+            return None
+
+        resp.raise_for_status()
+        json_response = resp.json()
+
+        retcode = json_response.get("retcode", json_response.get("code", -1))
+
+        if retcode != 0:
+            msg = json_response.get("message", "")
+            logging.warning(f"LineHaul retcode={retcode}: {msg}")
+            if "cookie" in msg.lower() or "login" in msg.lower():
+                raise ConnectionAbortedError("Sessão expirada.")
+            return None
+
+        return json_response.get("data", json_response)
+
+    except ConnectionAbortedError:
+        raise
+    except Exception as exc:
+        logging.error(f"Falha LineHaul [{url[:80]}]: {exc}")
         return None
 
 # =================================================================
@@ -294,12 +362,6 @@ def coletar_dados_produtividade(session):
     logging.info("--- Coletando Produtividade (Workstation) ---")
     tz = pytz.timezone(TIMEZONE)
     dados_finais = []
-
-    try:
-        session.get("https://spx.shopee.com.br/admin/workstation/productivity", timeout=15)
-        time.sleep(2)
-    except Exception:
-        pass
 
     for periodo in calcular_periodos_coleta():
         start_dt = tz.localize(
@@ -551,53 +613,8 @@ def processar_trip(t, tab_label):
         return None
 
 
-def executar_chamada_linehaul(session, url):
-    """Chamada GET específica para LineHaul — usa get_cookie_safe para evitar CookieConflictError."""
-    try:
-        # FIX: get_cookie_safe no lugar de session.cookies.get() que explode com duplicatas
-        csrf = get_cookie_safe(session, "csrftoken")
-        headers = {
-            "Referer":     "https://spx.shopee.com.br/",
-            "x-csrftoken": csrf,
-        }
-        resp = session.get(url, headers=headers, timeout=30)
-
-        if resp.status_code == 403:
-            logging.debug("LineHaul 403 — ignorado.")
-            return None
-
-        resp.raise_for_status()
-        json_response = resp.json()
-
-
-        retcode = json_response.get("retcode", json_response.get("code", -1))
-
-        if retcode != 0:
-            msg = json_response.get("message", "")
-            if "cookie" in msg.lower() or "login" in msg.lower():
-                raise ConnectionAbortedError("Sessão expirada.")
-            logging.debug(f"LineHaul retcode={retcode}: {msg}")
-            return None
-
-        return json_response.get("data", json_response)
-
-    except ConnectionAbortedError:
-        raise
-    except Exception as exc:
-        logging.error(f"Falha LineHaul [{url[:80]}]: {exc}")
-        return None
-
-
 def coletar_linehaul_trips(session):
     logging.info("--- Coletando LineHaul Trips ---")
-
-    try:
-        session.get("https://spx.shopee.com.br/", timeout=15)
-        time.sleep(1)
-        session.get("https://spx.shopee.com.br/admin/transportation/trip", timeout=15)
-        time.sleep(1)
-    except Exception:
-        pass
 
     display_range = calcular_display_range()
     todas = []
@@ -685,6 +702,7 @@ def coletar_linehaul_trips(session):
 def get_sheets_service():
     creds = None
     token_json = os.environ.get("GOOGLE_TOKEN_JSON", "")
+
     if token_json:
         import tempfile
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
@@ -693,15 +711,24 @@ def get_sheets_service():
         creds = Credentials.from_authorized_user_file(tmp.name, SCOPES)
     elif os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    else:
+        raise RuntimeError(
+            "Nenhuma credencial Google encontrada. "
+            "Configure a Secret GOOGLE_TOKEN_JSON ou coloque token.json na pasta do projeto."
+        )
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            logging.info("Token expirado — renovando via refresh_token...")
             creds.refresh(Request())
+            if os.path.exists("token.json"):
+                with open("token.json", "w") as f:
+                    f.write(creds.to_json())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
+            raise RuntimeError(
+                "Token Google inválido e sem refresh_token. "
+                "Regere o token localmente e atualize a Secret GOOGLE_TOKEN_JSON."
+            )
 
     return build("sheets", "v4", credentials=creds)
 
@@ -742,14 +769,13 @@ def append_timestamp(service, spreadsheet_id, sheet_name, ts):
 def salvar_configs_sessao(session: requests.Session, service, spreadsheet_id, sheet_name):
     logging.info(f"--- Salvando configs de sessão em '{sheet_name}' ---")
     try:
-        cookies_str = "; ".join(f"{c.name}={c.value}" for c in session.cookies)
         csrf  = get_cookie_safe(session, "csrftoken")
         dados = [
             ["Chave de Configuração", "Valor"],
             ["Data/Hora da Extração", datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")],
-            ["Cookie", cookies_str],
+            ["spx_cid", SPX_CID or "N/A"],
+            ["spx_uid", SPX_UID or "N/A"],
             ["x-csrftoken", csrf or "N/A"],
-            ["User-Agent", session.headers.get("User-Agent", "N/A")],
         ]
         write_to_sheet(service, spreadsheet_id, sheet_name, dados)
     except Exception as exc:
