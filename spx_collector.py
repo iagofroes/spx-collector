@@ -64,6 +64,10 @@ COLLECTOR_MODE = os.environ.get("COLLECTOR_MODE", "spx")
 
 SPX_USERNAME = os.environ.get("SPX_USERNAME", "")
 SPX_PASSWORD = os.environ.get("SPX_PASSWORD", "")
+SPX_CID      = os.environ.get("SPX_CID", "BR")
+SPX_UK       = os.environ.get("SPX_UK", "")
+SPX_ST       = os.environ.get("SPX_ST", "")
+SPX_UID      = os.environ.get("SPX_UID", "")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -111,6 +115,7 @@ def _md5(texto: str) -> str:
     return hashlib.md5(texto.encode()).hexdigest()
 
 
+# ── BLOCO: fazer_login ──
 def fazer_login(session: requests.Session) -> bool:
     if not SPX_USERNAME or not SPX_PASSWORD:
         logging.critical("SPX_USERNAME e/ou SPX_PASSWORD não definidos nos Secrets.")
@@ -124,22 +129,20 @@ def fazer_login(session: requests.Session) -> bool:
         logging.info(f"Login — Passo 1 OK. Cookies obtidos: {len(session.cookies)}")
 
         logging.info("Login — Passo 2: enviando credenciais...")
-        payload = {
-            "username":                    SPX_USERNAME,
-            "password":                    _md5(SPX_PASSWORD),
-            "captcha_signature":           "",
-            "security_device_fingerprint": SPX_DEVICE_FINGERPRINT,
-        }
-        login_headers = {
-            "Referer":      "https://fms.business.accounts.shopee.com.br/",
-            "Origin":       "https://fms.business.accounts.shopee.com.br",
-            "Content-Type": "application/json",
-            "x-app-type":   "27",
-        }
         resp_login = session.post(
             SPX_LOGIN_API_URL,
-            json=payload,
-            headers=login_headers,
+            json={
+                "username":                    SPX_USERNAME,
+                "password":                    _md5(SPX_PASSWORD),
+                "captcha_signature":           "",
+                "security_device_fingerprint": "",
+            },
+            headers={
+                "Referer":      "https://fms.business.accounts.shopee.com.br/",
+                "Origin":       "https://fms.business.accounts.shopee.com.br",
+                "Content-Type": "application/json",
+                "x-app-type":   "27",
+            },
             timeout=30,
             allow_redirects=False,
         )
@@ -160,36 +163,42 @@ def fazer_login(session: requests.Session) -> bool:
         )
         logging.info(f"Login — Passo 3: nonce obtido: {'OK' if token else 'VAZIO'}")
 
-        tob_url = SPX_TOB_LOGIN_URL
-        if token:
-            tob_url = (
-                f"https://spx.shopee.com.br/api/admin/basicserver/ops_tob_login"
-                f"?code={token}&refer=https://spx.shopee.com.br/%23/"
-            )
+        tob_url = (
+            f"https://spx.shopee.com.br/api/admin/basicserver/ops_tob_login"
+            f"?code={token}&refer=https://spx.shopee.com.br/%23/"
+        ) if token else SPX_TOB_LOGIN_URL
 
         logging.info("Login — Passo 3: finalizando sessão SPX...")
         session.headers.update({"Origin": "https://spx.shopee.com.br"})
         resp_tob = session.get(tob_url, timeout=30, allow_redirects=True)
         resp_tob.raise_for_status()
 
-        # FIX: usa get_cookie_safe para evitar CookieConflictError com cookies duplicados
-        csrf    = get_cookie_safe(session, "csrftoken")
-        spx_cid = get_cookie_safe(session, "spx_cid")
-        spx_uk  = get_cookie_safe(session, "spx_uk")
+        # GitHub Actions não recebe cookies spx.* via redirect — injeta das secrets
+        for name, val in [
+            ("spx_cid", SPX_CID),
+            ("spx_uk",  SPX_UK),
+            ("spx_st",  SPX_ST),
+            ("spx_uid", SPX_UID),
+        ]:
+            if val:
+                session.cookies.set(name, val, domain="spx.shopee.com.br")
+                session.cookies.set(name, val, domain=".spx.shopee.com.br")
 
+        csrf = get_cookie_safe(session, "csrftoken")
         if csrf:
             session.headers.update({"x-csrftoken": csrf})
 
-        # FIX: aceita sessão se tiver spx_uk ou spx_cid, mesmo sem csrftoken
-        if csrf or spx_cid or spx_uk:
-            logging.info("✅ Login SPX completo! Sessão estabelecida.")
+        if SPX_UK or SPX_ST:
+            logging.info(
+                f"✅ Login SPX completo! "
+                f"spx_uk={'OK' if SPX_UK else 'N/A'} | "
+                f"spx_st={SPX_ST or 'N/A'} | "
+                f"spx_uid={SPX_UID or 'N/A'}"
+            )
             return True
 
-        logging.warning(
-            "Login: cookies spx_cid/csrftoken/spx_uk não encontrados, "
-            "mas nenhum erro ocorreu. Tentando continuar..."
-        )
-        return True
+        logging.error("Login: nenhum cookie de sessão — abortando.")
+        return False
 
     except ConnectionAbortedError:
         raise
