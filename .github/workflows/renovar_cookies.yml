@@ -1,0 +1,47 @@
+name: "SPX Collector - 24/7"
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spx-collector-run
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Coletar dados SPX
+    runs-on: ubuntu-latest
+    environment: SEGREDOS
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Executar coletor SPX
+        env:
+          SPX_USERNAME: ${{ secrets.SPX_USERNAME }}
+          SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
+          GITHUB_PAT: ${{ secrets.PAT }}
+          SPX_UK: ${{ secrets.SPX_UK }}
+          SPX_UID: ${{ secrets.SPX_UID }}
+          SEATALK_WEBHOOK: ${{ secrets.SEATALK_WEBHOOK }}
+          COLLECTOR_MODE: "spx"
+          EXECUTION_INTERVAL_SECONDS: "60"
+        run: timeout 21600 python spx-collector.py || true
