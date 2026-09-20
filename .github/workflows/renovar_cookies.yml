@@ -1,4 +1,4 @@
-name: "SPX Collector - 24/7"
+name: "renovar_cookies"
 
 on:
   schedule:
@@ -14,9 +14,8 @@ concurrency:
 
 jobs:
   collect:
-    name: Coletar dados SPX
+    name: Renovar Cookies
     runs-on: ubuntu-latest
-    environment: SEGREDOS
     timeout-minutes: 360
 
     steps:
@@ -34,14 +33,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Executar coletor SPX
+      - name: Executar Renovação de cookies
         env:
           SPX_USERNAME: ${{ secrets.SPX_USERNAME }}
           SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
-          GITHUB_PAT: ${{ secrets.PAT }}
+          GITHUB_PAT: ${{ secrets.GH_PAT }}
           SPX_UK: ${{ secrets.SPX_UK }}
           SPX_UID: ${{ secrets.SPX_UID }}
           SEATALK_WEBHOOK: ${{ secrets.SEATALK_WEBHOOK }}
           COLLECTOR_MODE: "spx"
           EXECUTION_INTERVAL_SECONDS: "60"
-        run: timeout 21600 python spx-collector.py || true
+        run: timeout 21600 python renovar_cookies.py || true
