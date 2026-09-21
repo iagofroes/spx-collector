@@ -10,6 +10,6 @@ __pycache__/
 .venv/
 venv/
 env/
-
+.env/
 # Logs
 *.log
