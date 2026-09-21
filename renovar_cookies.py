@@ -394,7 +394,7 @@ try:
     )
 
     GITHUB_PAT = os.environ.get(
-        "GH_PAT",
+        "GITHUB_PAT",
         ""
     )
 
