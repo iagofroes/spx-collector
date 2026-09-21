@@ -583,11 +583,9 @@ try:
 
     spx_uk_atualizado = mudar_secret_ambiente_github(
 
-        owner="jonathandamasceno",
+        owner="iagofroes",
 
-        repo="spx-collector-teste",
-
-        environment="segredos",
+        repo="spx-collector",
 
         secret_name="SPX_UK",
 
@@ -603,11 +601,9 @@ try:
 
     spx_uid_atualizado = mudar_secret_ambiente_github(
 
-        owner="jonathandamasceno",
+        owner="iagofroes",
 
-        repo="spx-collector-teste",
-
-        environment="segredos",
+        repo="spx-collector",
 
         secret_name="SPX_UID",
 
