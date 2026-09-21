@@ -3,7 +3,6 @@ import time
 import requests
 
 from base64 import b64encode
-from urllib.parse import quote
 
 from nacl import encoding, public
 
@@ -21,7 +20,7 @@ from selenium.webdriver.support import expected_conditions as EC
 def encrypt(public_key: str, secret_value: str) -> str:
     """
     Criptografa o secret usando a chave pública
-    do Environment do GitHub via Libsodium (PyNaCl).
+    dos Secrets do repositório via Libsodium (PyNaCl).
     """
 
     public_bytes = public.PublicKey(
@@ -38,17 +37,16 @@ def encrypt(public_key: str, secret_value: str) -> str:
     return b64encode(encrypted).decode("utf-8")
 
 
-def mudar_secret_ambiente_github(
+def mudar_secret_github(
     owner: str,
     repo: str,
-    environment: str,
     secret_name: str,
     secret_value: str,
     token: str
 ):
     """
-    Cria ou atualiza um secret dentro de um Environment
-    específico no GitHub.
+    Cria ou atualiza um secret normal do repositório
+    no GitHub, sem utilizar Environment.
     """
 
     # Não envia secret vazio
@@ -69,25 +67,20 @@ def mudar_secret_ambiente_github(
         "X-GitHub-Api-Version": "2022-11-28"
     }
 
-    # Protege nomes com caracteres especiais
-    environment_encoded = quote(environment, safe="")
-    secret_name_encoded = quote(secret_name, safe="")
-
     try:
 
         # --------------------------------------------------------
-        # 1. BUSCAR A CHAVE PÚBLICA DO ENVIRONMENT
+        # 1. BUSCAR A CHAVE PÚBLICA DOS SECRETS DO REPOSITÓRIO
         # --------------------------------------------------------
 
         url_key = (
             f"https://api.github.com/repos/"
-            f"{owner}/{repo}/environments/"
-            f"{environment_encoded}/secrets/public-key"
+            f"{owner}/{repo}/actions/secrets/public-key"
         )
 
         print(
-            f"🔑 Buscando chave pública do ambiente "
-            f"'{environment}'..."
+            f"🔑 Buscando chave pública dos secrets "
+            f"do repositório '{owner}/{repo}'..."
         )
 
         key_response = requests.get(
@@ -120,14 +113,13 @@ def mudar_secret_ambiente_github(
         )
 
         # --------------------------------------------------------
-        # 3. ENVIAR O SECRET PARA O ENVIRONMENT
+        # 3. ENVIAR O SECRET PARA O REPOSITÓRIO
         # --------------------------------------------------------
 
         url_secret = (
             f"https://api.github.com/repos/"
-            f"{owner}/{repo}/environments/"
-            f"{environment_encoded}/secrets/"
-            f"{secret_name_encoded}"
+            f"{owner}/{repo}/actions/secrets/"
+            f"{secret_name}"
         )
 
         payload = {
@@ -137,7 +129,7 @@ def mudar_secret_ambiente_github(
 
         print(
             f"🔐 Enviando secret '{secret_name}' "
-            f"para o GitHub..."
+            f"para o repositório..."
         )
 
         put_response = requests.put(
@@ -153,7 +145,7 @@ def mudar_secret_ambiente_github(
 
             print(
                 f"✅ Secret '{secret_name}' atualizado "
-                f"com sucesso no ambiente '{environment}'!"
+                f"com sucesso no repositório!"
             )
 
             return True
@@ -177,7 +169,8 @@ def mudar_secret_ambiente_github(
             f"{api_err}"
         )
 
-        if 'key_response' in locals():
+        if "key_response" in locals():
+
             print(
                 f"Resposta do GitHub: "
                 f"{key_response.text}"
@@ -224,6 +217,7 @@ def enviar_seatalk(mensagem: str, webhook: str) -> bool:
     }
 
     try:
+
         response = requests.post(
             webhook,
             json=payload,
@@ -231,20 +225,25 @@ def enviar_seatalk(mensagem: str, webhook: str) -> bool:
         )
 
         if response.ok:
+
             print("✅ Mensagem enviada para o SeaTalk.")
+
             return True
 
         print(
             f"❌ Erro ao enviar mensagem para o SeaTalk: "
             f"{response.status_code} - {response.text}"
         )
+
         return False
 
     except requests.exceptions.RequestException as seatalk_error:
+
         print(
             f"❌ Erro de comunicação com o SeaTalk: "
             f"{seatalk_error}"
         )
+
         return False
 
 
@@ -257,15 +256,18 @@ def enviar_screenshot_seatalk(driver, webhook: str) -> bool:
     try:
 
         screenshot_bytes = driver.get_screenshot_as_png()
+
         screenshot_base64 = b64encode(
             screenshot_bytes
         ).decode("utf-8")
 
         if len(screenshot_base64) > 5 * 1024 * 1024:
+
             print(
                 "⚠️ Screenshot excede o limite de 5 MB "
                 "do SeaTalk."
             )
+
             return False
 
         payload = {
@@ -282,27 +284,34 @@ def enviar_screenshot_seatalk(driver, webhook: str) -> bool:
         )
 
         if response.ok:
+
             print("📸 Screenshot enviado para o SeaTalk.")
+
             return True
 
         print(
             f"❌ Erro ao enviar screenshot para o SeaTalk: "
             f"{response.status_code} - {response.text}"
         )
+
         return False
 
     except requests.exceptions.RequestException as screenshot_error:
+
         print(
             f"❌ Erro de comunicação com o SeaTalk "
             f"ao enviar screenshot: {screenshot_error}"
         )
+
         return False
 
     except Exception as screenshot_error:
+
         print(
             f"⚠️ Não foi possível capturar/enviar "
             f"o screenshot: {screenshot_error}"
         )
+
         return False
 
 
@@ -371,7 +380,7 @@ try:
 
 
     # ========================================================
-    # 2. LER VARIÁVEIS DE AMBIENTE
+    # 2. LER VARIÁVEIS
     # ========================================================
 
     SPX_USERNAME = os.environ.get(
@@ -400,22 +409,25 @@ try:
     # ========================================================
 
     if not SPX_USERNAME:
+
         raise Exception(
             "A variável SPX_USERNAME está vazia."
         )
 
     if not SPX_PASSWORD:
+
         raise Exception(
             "A variável SPX_PASSWORD está vazia."
         )
 
     if not GITHUB_PAT:
+
         raise Exception(
             "A variável GITHUB_PAT está vazia."
         )
 
 
-    print("✅ Variáveis de ambiente encontradas.")
+    print("✅ Variáveis encontradas.")
 
 
     # ========================================================
@@ -425,6 +437,7 @@ try:
     print("🔐 Preenchendo usuário...")
 
     campo_usuario.clear()
+
     campo_usuario.send_keys(
         SPX_USERNAME
     )
@@ -442,6 +455,7 @@ try:
     )
 
     campo_senha.clear()
+
     campo_senha.send_keys(
         SPX_PASSWORD
     )
@@ -450,7 +464,9 @@ try:
     # ========================================================
     # 5. ENVIAR LOGIN
     # ========================================================
+
     time.sleep(5)
+
     print("🔘 Procurando botão de login...")
 
     botao_login = wait.until(
@@ -486,9 +502,11 @@ try:
         "🍪 Aguardando cookies de autenticação..."
     )
 
+
     def cookies_disponiveis(driver):
 
         uid = driver.get_cookie("spx_uid")
+
         uk = driver.get_cookie("spx_uk")
 
         return uid is not None and uk is not None
@@ -574,6 +592,7 @@ try:
 
     # ========================================================
     # 10. ATUALIZAR SPX_UK NO GITHUB
+    #     SEM ENVIRONMENT
     # ========================================================
 
     print(
@@ -581,7 +600,8 @@ try:
         "secrets no GitHub..."
     )
 
-    spx_uk_atualizado = mudar_secret_ambiente_github(
+
+    spx_uk_atualizado = mudar_secret_github(
 
         owner="iagofroes",
 
@@ -597,9 +617,10 @@ try:
 
     # ========================================================
     # 11. ATUALIZAR SPX_UID NO GITHUB
+    #     SEM ENVIRONMENT
     # ========================================================
 
-    spx_uid_atualizado = mudar_secret_ambiente_github(
+    spx_uid_atualizado = mudar_secret_github(
 
         owner="iagofroes",
 
@@ -622,19 +643,33 @@ try:
         and spx_uk_atualizado
     )
 
+
     msg = (
         "🍪 ATUALIZAÇÃO DOS COOKIES SPX\n\n"
-        f"SPX_UID: {'✅ Encontrado' if spx_uid_value else '❌ Não encontrado'}\n"
-        f"SPX_UK: {'✅ Encontrado' if spx_uk_value else '❌ Não encontrado'}\n\n"
+
+        f"SPX_UID: "
+        f"{'✅ Encontrado' if spx_uid_value else '❌ Não encontrado'}\n"
+
+        f"SPX_UK: "
+        f"{'✅ Encontrado' if spx_uk_value else '❌ Não encontrado'}\n\n"
+
         "ATUALIZAÇÃO NO GITHUB\n\n"
-        f"SPX_UID: {'✅ Atualizado' if spx_uid_atualizado else '❌ Falhou'}\n"
-        f"SPX_UK: {'✅ Atualizado' if spx_uk_atualizado else '❌ Falhou'}\n\n"
-        f"RESULTADO: {'✅ PROCESSO CONCLUÍDO' if processo_concluido else '❌ PROCESSO COM ERRO'}"
+
+        f"SPX_UID: "
+        f"{'✅ Atualizado' if spx_uid_atualizado else '❌ Falhou'}\n"
+
+        f"SPX_UK: "
+        f"{'✅ Atualizado' if spx_uk_atualizado else '❌ Falhou'}\n\n"
+
+        f"RESULTADO: "
+        f"{'✅ PROCESSO CONCLUÍDO' if processo_concluido else '❌ PROCESSO COM ERRO'}"
     )
+
 
     print(
         "\n" + msg
     )
+
 
     enviar_seatalk(
         msg,
