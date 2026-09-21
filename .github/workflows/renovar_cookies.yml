@@ -37,7 +37,7 @@ jobs:
         env:
           SPX_USERNAME: ${{ secrets.SPX_USERNAME }}
           SPX_PASSWORD: ${{ secrets.SPX_PASSWORD }}
-          GITHUB_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_PAT: ${{ secrets.PAT_TOKEN }}
           SPX_UK: ${{ secrets.SPX_UK }}
           SPX_UID: ${{ secrets.SPX_UID }}
           SEATALK_WEBHOOK: ${{ secrets.SEATALK_WEBHOOK }}
