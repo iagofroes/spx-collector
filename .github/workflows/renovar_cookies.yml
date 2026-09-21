@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: spx-collector-run
+  group: renovar-cookies
   cancel-in-progress: false
 
 jobs:
